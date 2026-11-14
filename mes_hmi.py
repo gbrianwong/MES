@@ -23,15 +23,18 @@ Features:
     (barrel, tip, cartridge, cap), each with its part variant, the
     machine that made it, a timestamp, and the work-order number it was
     built under.
+  - PDF Report button: export current work-order totals plus the session's
+    rejection and genealogy records.
 
 Run:
+    pip install -r requirements.txt
     python mes_hmi.py
 """
 
 from __future__ import annotations
 
 import os, queue, sys, threading, time, tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox, simpledialog, filedialog
 
 sys.path.insert(0, os.path.dirname(__file__))
 from prod import ProductionLine, PenType, BallPen
@@ -605,6 +608,7 @@ class MesHMI(tk.Tk):
         self.resizable(False, False)
 
         self._mes      = MES()
+        self._rejection_log: list[dict[str, str]] = []
         self._shared_q: queue.Queue = queue.Queue()
         self._work_orders: list[WorkOrder] = default_work_orders()
         self._mes.configure(self._work_orders)
@@ -638,6 +642,10 @@ class MesHMI(tk.Tk):
         tk.Button(toolbar, text="⚙  Configure Work Orders", command=self._open_work_order_dialog,
                   bg=ACCENT, fg="#000", font=("Courier New", 10, "bold"),
                   relief="flat", cursor="hand2").pack(side="left")
+
+        tk.Button(toolbar, text="PDF Report", command=self._export_pdf_report,
+                  bg=GREEN, fg="#000", font=("Courier New", 10, "bold"),
+                  relief="flat", cursor="hand2").pack(side="left", padx=(8, 0))
 
         self._queue_summary_var = tk.StringVar(value="")
         tk.Label(toolbar, textvariable=self._queue_summary_var, bg=PANEL, fg=FG_DIM,
@@ -760,6 +768,42 @@ class MesHMI(tk.Tk):
         self._mes.configure(work_orders)
         self._reset_queue()
 
+    def _export_pdf_report(self) -> None:
+        filename = time.strftime("MES_Report_%Y%m%d_%H%M%S.pdf")
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Save PDF Report",
+            defaultextension=".pdf",
+            initialfile=filename,
+            filetypes=(("PDF files", "*.pdf"),),
+        )
+        if not path:
+            return
+
+        try:
+            from report_pdf import generate_pdf_report
+        except ModuleNotFoundError:
+            messagebox.showerror(
+                "PDF dependency missing",
+                "Install the project dependencies with:\n"
+                "python -m pip install -r requirements.txt",
+                parent=self,
+            )
+            return
+
+        try:
+            generate_pdf_report(
+                path,
+                line_data=list(self._mes.lines.values()),
+                rejections=list(self._rejection_log),
+                genealogy=list(self._mes.genealogy),
+            )
+        except OSError as exc:
+            messagebox.showerror("Could not save PDF", str(exc), parent=self)
+            return
+
+        messagebox.showinfo("PDF Report saved", f"Report saved to:\n{path}", parent=self)
+
     def _start_queue(self) -> None:
         if self._current_wo is not None:
             return
@@ -856,6 +900,14 @@ class MesHMI(tk.Tk):
                 elif t == EVT_REJECTED:
                     if is_current:
                         self._line_panel.refresh(self._mes.data(order_number))
+                    rejection = {
+                        "order_number": str(order_number if order_number is not None else "?"),
+                        "order_name": evt.get("order_name", "?"),
+                        "item": evt["item"],
+                        "station": evt["station"],
+                        "reason": evt["reason"],
+                    }
+                    self._rejection_log.append(rejection)
                     self._tree.insert("", "end", values=(
                         order_number if order_number is not None else "?",
                         evt.get("order_name", "?"), evt["item"], evt["station"], evt["reason"],
